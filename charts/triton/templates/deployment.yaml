@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "triton.fullname" . }}
+  labels:
+    {{- include "triton.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: {{ include "triton.progressDeadlineSeconds" . }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "triton.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "triton.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.dockerconfigjson }}
+      imagePullSecrets:
+        - name: {{ include "triton.dockerconfigSecretName" . }}
+      {{- end }}
+      containers:
+        - name: triton
+          image: {{ include "triton.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - tritonserver
+            - --model-repository={{ .Values.modelRepositoryPath }}
+            - --http-port=8000
+            - --grpc-port=8001
+            - --metrics-port=8002
+            {{- range .Values.serverExtraArgs }}
+            - {{ . | replace "$" "$$" | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: grpc
+              containerPort: 8001
+              protocol: TCP
+            - name: metrics
+              containerPort: 8002
+              protocol: TCP
+          {{- with .Values.env }}
+          env:
+            {{- range . }}
+            - name: {{ .name | quote }}
+              {{- if hasKey . "valueFrom" }}
+              valueFrom:
+                {{- toYaml .valueFrom | nindent 16 }}
+              {{- else }}
+              value: {{ .value | toString | replace "$" "$$" | quote }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /v2/health/live
+              port: http
+            periodSeconds: {{ .Values.probe.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probe.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.probe.startup.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /v2/health/live
+              port: http
+            periodSeconds: {{ .Values.probe.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probe.liveness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probe.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /v2/health/ready
+              port: http
+            periodSeconds: {{ .Values.probe.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probe.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probe.readiness.timeoutSeconds }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

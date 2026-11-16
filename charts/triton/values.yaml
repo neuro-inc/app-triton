@@ -1,0 +1,49 @@
+nameOverride: ""
+fullnameOverride: ""
+apolo_app_id: ""
+preset_name: ""
+
+image:
+  repository: nvcr.io/nvidia/tritonserver
+  tag: 26.10-py3
+  digest: ""
+  pullPolicy: IfNotPresent
+
+dockerconfigjson: null
+
+resources: {}
+tolerations: []
+affinity: {}
+podLabels: {}
+podAnnotations: {}
+
+modelRepositoryPath: /models
+serverExtraArgs: []
+env: []
+
+ingress:
+  className: traefik
+  http:
+    enabled: false
+    host: ""
+    annotations: {}
+  grpc:
+    enabled: false
+    host: ""
+    annotations: {}
+
+probe:
+  startup:
+    periodSeconds: 10
+    failureThreshold: 180
+    timeoutSeconds: 2
+  readiness:
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 2
+  liveness:
+    periodSeconds: 30
+    failureThreshold: 9
+    timeoutSeconds: 2
+
+progressDeadlineMarginSeconds: 300

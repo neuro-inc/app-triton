@@ -1,0 +1,73 @@
+fullnameOverride: triton-b1aeaf654526474ba22480d00e5b0109
+apolo_app_id: b1aeaf654526474ba22480d00e5b0109
+preset_name: cpu-small
+image:
+  repository: nvcr.io/nvidia/tritonserver
+  tag: 26.10-py3
+  digest: ''
+  pullPolicy: IfNotPresent
+dockerconfigjson: null
+resources:
+  requests:
+    cpu: 1000.0m
+    memory: 954M
+  limits:
+    cpu: 1000.0m
+    memory: 954M
+tolerations:
+- effect: NoSchedule
+  key: platform.neuromation.io/job
+  operator: Exists
+- effect: NoExecute
+  key: node.kubernetes.io/not-ready
+  operator: Exists
+  tolerationSeconds: 300
+- effect: NoExecute
+  key: node.kubernetes.io/unreachable
+  operator: Exists
+  tolerationSeconds: 300
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: platform.neuromation.io/nodepool
+          operator: In
+          values:
+          - cpu_pool
+podLabels:
+  platform.apolo.us/component: app
+  platform.apolo.us/preset: cpu-small
+  platform.apolo.us/inject-storage: 'true'
+  platform.apolo.us/org: test-org
+  platform.apolo.us/project: test-project
+podAnnotations:
+  platform.apolo.us/inject-storage: '[{"storage_uri": "storage://cluster/test-org/test-project/triton/models",
+    "mount_path": "/models", "mount_mode": "r"}, {"storage_uri": "storage://cluster/test-org/test-project/.apps/hugging-face-cache",
+    "mount_path": "/root/.cache/huggingface", "mount_mode": "rw"}]'
+modelRepositoryPath: /models
+serverExtraArgs:
+- --log-verbose=1
+env:
+- name: HF_HOME
+  value: /root/.cache/huggingface
+- name: HF_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: apps-secrets
+      key: hf-token
+- name: LOG_LEVEL
+  value: info
+ingress:
+  className: traefik
+  http:
+    enabled: true
+    host: triton--b1aeaf654526474ba22480d00e5b0109.apps.some.org.neu.ro
+    annotations:
+      traefik.ingress.kubernetes.io/router.middlewares: platform-platform-control-plane-ingress-auth@kubernetescrd
+  grpc:
+    enabled: true
+    host: triton-grpc--b1aeaf654526474ba22480d00e5b0109.apps.some.org.neu.ro
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.middlewares: platform-platform-control-plane-ingress-auth@kubernetescrd

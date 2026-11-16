@@ -1,0 +1,19 @@
+{{- if .Values.ingress.grpc.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "triton.grpcServiceName" . }}
+  labels:
+    {{- include "triton.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 8001
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "triton.selectorLabels" . | nindent 4 }}
+{{- end }}
