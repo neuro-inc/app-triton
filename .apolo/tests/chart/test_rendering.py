@@ -245,6 +245,25 @@ async def test_server_args_are_not_expanded_by_kubernetes(
     ]
 
 
+async def test_explicit_mode_cannot_come_from_an_env_var(
+    setup_clients, minimal_inputs, tmp_path
+):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "ingress_http": IngressHttp(auth=NoAuth()),
+            "server_extra_args": ["$(MODE)"],
+            "extra_env_vars": [Env(name="MODE", value="--model-control-mode=explicit")],
+        }
+    )
+    manifests = render(await generate(setup_clients, inputs), tmp_path)
+
+    container = get_container(manifests)
+    assert container["args"][5:] == ["$$(MODE)"]
+    assert {"name": "MODE", "value": "--model-control-mode=explicit"} in container[
+        "env"
+    ]
+
+
 async def test_progress_deadline_follows_the_startup_budget(
     setup_clients, minimal_inputs, tmp_path
 ):
