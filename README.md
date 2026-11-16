@@ -27,7 +27,7 @@
 | `server_extra_args` | Arguments appended to the `tritonserver` command. |
 | `hf_cache` | Apolo Files directory mounted read-write at `/root/.cache/huggingface`, with `HF_HOME` pointing there. |
 | `hf_token` | Hugging Face token, passed as `HF_TOKEN`. |
-| `extra_env_vars` | Environment variables of the server container. They come last and override `HF_HOME` and `HF_TOKEN`. Names must be C identifiers; `AIP_*` names are refused because they switch `tritonserver` to Vertex AI mode, which turns the HTTP and gRPC services off. |
+| `extra_env_vars` | Environment variables of the server container. They come last and override `HF_HOME` and `HF_TOKEN`. Names must be C identifiers; `AIP_*` names are refused: `AIP_MODE=PREDICTION` switches `tritonserver` to Vertex AI mode and turns its HTTP and gRPC services off. |
 
 ## Outputs
 
@@ -42,7 +42,7 @@ The metrics port 8002 is reachable inside the project only and is not an output.
 
 - Sets `fullnameOverride` to `triton-<app id>`; the outputs are derived from it and from the ingress hosts in the values, never from the cluster.
 - Mounts the model repository read-only at `/models` and the Hugging Face cache read-write through the platform storage injection, and always labels the pod for it.
-- Refuses a model repository or Hugging Face cache outside the project of the app, a path with a `..` segment, also an encoded one (`..%2f`), and a path that would mount something other than what was typed: a `:`, `?` or `#` in it, control characters, or a user or port in an absolute URI.
+- Refuses a model repository or Hugging Face cache outside the project of the app, a path with a `..` segment, also an encoded one (`..%2f`), and a path that would mount something other than what was typed: a `:`, `?` or `#` in it, control characters (also percent-encoded ones), or a user or port in an absolute URI.
 - Mounts the decoded path: `storage:my models` is mounted from the directory `my models`, not `my%20models`.
 - Refuses server arguments that would make a port unreachable or turn on gRPC TLS: `--http-port`, `--grpc-port`, `--metrics-port`, `--http-address`, `--grpc-address`, `--metrics-address`, `--allow-http`, `--allow-grpc`, `--grpc-use-ssl`, `--grpc-use-ssl-mutual`, `--grpc-server-cert`, `--grpc-server-key`, `--grpc-root-cert`. Arguments are read the way `tritonserver` reads them: `--flag=value` or `--flag value`, and any unambiguous prefix of a flag (`--http-p=9000` is `--http-port=9000`). An ambiguous prefix such as `--http=9000` and an empty item are refused too; `tritonserver` would not start with them. So are `$(` (Kubernetes would replace a `$(VAR)` reference with an environment variable) and `--http-restricted-api` / `--grpc-restricted-protocol` values that restrict the `health` API, which the probes call.
 - Refuses `--model-control-mode=explicit` (in any spelling `tritonserver` accepts, e.g. `--model-control=EXPLICIT`) while a public endpoint has no authentication. Any occurrence that resolves to `explicit` counts, also when a later one sets another mode: a flag that takes a value can swallow the later one. The reason: in explicit mode the HTTP and gRPC APIs load and unload models, including model files sent in the request.

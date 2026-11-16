@@ -227,6 +227,18 @@ def _check_server_args(input_: TritonAppInputs) -> None:
         raise ValueError(msg)
 
 
+def _has_control_characters(value: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+
+
+def _refuse_storage_path(files_path: ApoloFilesPath, title: str) -> t.NoReturn:
+    msg = (
+        f"{title} {files_path.path!r} must be a plain storage path: "
+        "no ':', '?', '#', control characters, user or port"
+    )
+    raise ValueError(msg)
+
+
 def _check_storage_path(files_path: ApoloFilesPath, title: str) -> None:
     rest = files_path.path.removeprefix(STORAGE_PREFIX)
     authority, path = "", rest
@@ -234,15 +246,11 @@ def _check_storage_path(files_path: ApoloFilesPath, title: str) -> None:
         authority, _, path = rest[2:].partition("/")
     if (
         any(char in rest for char in "?#")
-        or any(ord(char) < 32 or ord(char) == 127 for char in rest)
+        or _has_control_characters(rest)
         or any(char in authority for char in ":@")
         or ":" in path
     ):
-        msg = (
-            f"{title} {files_path.path!r} must be a plain storage path: "
-            "no ':', '?', '#', control characters, user or port"
-        )
-        raise ValueError(msg)
+        _refuse_storage_path(files_path, title)
 
 
 def _get_project_path(
@@ -253,6 +261,8 @@ def _get_project_path(
     config = client.config
     project = tuple(part for part in (config.org_name, config.project_name) if part)
     parts = tuple(part for part in uri.path.split("/") if part)
+    if _has_control_characters(uri.path):
+        _refuse_storage_path(files_path, title)
     if (
         uri.host != config.cluster_name
         or parts[: len(project)] != project
@@ -277,8 +287,9 @@ def _check_env_names(input_: TritonAppInputs) -> None:
             raise ValueError(msg)
         if env_var.name.startswith(VERTEX_AI_ENV_PREFIX):
             msg = (
-                f"Environment variable {env_var.name} is not allowed: "
-                "AIP_ variables switch tritonserver to Vertex AI mode"
+                f"Environment variable {env_var.name} is not allowed: AIP_MODE="
+                "PREDICTION switches tritonserver to Vertex AI mode and turns its "
+                "HTTP and gRPC services off, so AIP_ variables are refused"
             )
             raise ValueError(msg)
 

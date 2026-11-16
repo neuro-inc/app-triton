@@ -586,7 +586,7 @@ async def test_vertex_ai_env_is_refused(setup_clients, minimal_inputs, name):
         update={"extra_env_vars": [Env(name=name, value="PREDICTION")]}
     )
 
-    with pytest.raises(ValueError, match="AIP_ variables switch tritonserver"):
+    with pytest.raises(ValueError, match="turns its HTTP and gRPC services off"):
         await generate(setup_clients, inputs)
 
 
@@ -611,6 +611,9 @@ UNSAFE_STORAGE_PATHS = [
     f"storage://user@{DEFAULT_CLUSTER_NAME}/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}/m",
     f"storage://{DEFAULT_CLUSTER_NAME}:80/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}/m",
     f"{PROJECT_ROOT}/triton:models",
+    f"{PROJECT_ROOT}/a%0Ab",
+    f"{PROJECT_ROOT}/a%7Fb",
+    "storage:triton/a%09b",
 ]
 
 
