@@ -20,7 +20,7 @@
 | Input | Meaning |
 | --- | --- |
 | `preset` | Resources of the server. At least 1 GB of memory. |
-| `image` | Triton server image, by tag or by `sha256` digest (`repo@sha256:...`). The server runs as `tritonserver --model-repository=/models` through the image entrypoint. |
+| `image` | Triton server image, by tag or by `sha256` digest (`repo@sha256:...`); defaults to `nvcr.io/nvidia/tritonserver:26.10-py3`. An empty tag is refused: NVIDIA publishes no `latest` tag for `tritonserver`. The server runs as `tritonserver --model-repository=/models` through the image entrypoint. |
 | `model_repository` | Apolo Files directory with the model repository, picked from a Triton Model Repository app or given inline. It must be in the project of the app and is mounted read-only at `/models`. |
 | `ingress_http` | Public HTTP/REST endpoint. Off by default; platform authentication by default once enabled. |
 | `ingress_grpc` | Public gRPC endpoint on port 443. Off by default; platform authentication by default once enabled. |

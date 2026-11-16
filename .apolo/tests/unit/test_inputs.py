@@ -11,6 +11,7 @@ from apolo_app_types_fixtures.constants import (
     DEFAULT_ORG_NAME,
     DEFAULT_PROJECT_NAME,
 )
+from apolo_apps_triton.app_types import TritonAppInputs
 from apolo_apps_triton.inputs_processor import TritonAppChartValueProcessor
 from apolo_sdk._parsing_utils import _ImageNameParser
 from yarl import URL
@@ -669,7 +670,7 @@ def real_image_parser(setup_clients):
             "1",
             ("registry.example.com:5000/team/triton", "1", ""),
         ),
-        ("localhost:5000/triton", None, ("localhost:5000/triton", "latest", "")),
+        ("localhost:5000/triton", "5", ("localhost:5000/triton", "5", "")),
         (
             "nvcr.io/nvidia/tritonserver",
             "26.10-py3",
@@ -737,4 +738,42 @@ async def test_invalid_image_names_with_a_digest_are_refused(
     )
 
     with pytest.raises(ValueError, match="image"):
+        await generate(real_image_parser, inputs)
+
+
+async def test_image_defaults_to_the_tested_triton_release(setup_clients):
+    inputs = TritonAppInputs(
+        preset=Preset(name="cpu-small"),
+        model_repository=TritonModelRepository(
+            files_path=ApoloFilesPath(path="storage:triton/models")
+        ),
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["image"] == {
+        "repository": "nvcr.io/nvidia/tritonserver",
+        "tag": "26.10-py3",
+        "digest": "",
+        "pullPolicy": "IfNotPresent",
+    }
+
+
+@pytest.mark.parametrize(
+    ("repository", "tag"),
+    [
+        ("nvcr.io/nvidia/tritonserver", None),
+        ("nvcr.io/nvidia/tritonserver", ""),
+        ("nvcr.io/nvidia/tritonserver", "  "),
+        ("image:triton", None),
+    ],
+)
+async def test_image_without_a_tag_is_refused(
+    real_image_parser, minimal_inputs, repository, tag
+):
+    inputs = minimal_inputs.model_copy(
+        update={"image": ContainerImage(repository=repository, tag=tag)}
+    )
+
+    with pytest.raises(ValueError, match="has no tag: set a tag such as 26.10-py3"):
         await generate(real_image_parser, inputs)

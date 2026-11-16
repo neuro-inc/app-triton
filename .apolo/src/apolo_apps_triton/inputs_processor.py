@@ -310,12 +310,16 @@ async def _get_image(
             raise ValueError(msg)
         await get_image_docker_url(client=client, image=name, tag="latest")
         return {"repository": name, "tag": "", "digest": digest}
-    image_url = await get_image_docker_url(
-        client=client, image=repository, tag=tag or "latest"
-    )
+    if not tag or not tag.strip():
+        msg = (
+            f"Image {repository} has no tag: set a tag such as 26.10-py3 "
+            "or a sha256 digest; the app does not fall back to latest"
+        )
+        raise ValueError(msg)
+    image_url = await get_image_docker_url(client=client, image=repository, tag=tag)
     if repository.startswith("image:"):
         repository, tag = image_url.rsplit(":", 1)
-    return {"repository": repository, "tag": tag or "latest", "digest": ""}
+    return {"repository": repository, "tag": tag, "digest": ""}
 
 
 def _build_env(

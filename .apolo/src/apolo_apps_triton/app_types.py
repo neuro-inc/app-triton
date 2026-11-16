@@ -27,13 +27,15 @@ from apolo_app_types.protocols.triton import (
 class TritonAppInputs(AppInputs):
     preset: Preset
     image: ContainerImage = Field(
-        ...,
+        default=ContainerImage(
+            repository="nvcr.io/nvidia/tritonserver", tag="26.10-py3"
+        ),
         json_schema_extra=SchemaExtraMetadata(
             title="Triton Server Image",
-            description="Triton Inference Server image, e.g. repository "
-            "nvcr.io/nvidia/tritonserver with tag <yy.mm>-py3. The server is "
-            "started as `tritonserver --model-repository=/models <extra args>` "
-            "through the image entrypoint.",
+            description="Triton Inference Server image with a tag (e.g. "
+            "26.10-py3) or a sha256 digest. The server is started as "
+            "`tritonserver --model-repository=/models <extra args>` through the "
+            "image entrypoint.",
         ).as_json_schema_extra(),
     )
     model_repository: TritonModelRepository

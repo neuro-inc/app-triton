@@ -503,7 +503,15 @@
     },
     "image": {
       "$ref": "#/$defs/ContainerImage",
-      "x-description": "Triton Inference Server image, e.g. repository nvcr.io/nvidia/tritonserver with tag <yy.mm>-py3. The server is started as `tritonserver --model-repository=/models <extra args>` through the image entrypoint.",
+      "default": {
+        "repository": "nvcr.io/nvidia/tritonserver",
+        "tag": "26.10-py3",
+        "dockerconfigjson": null,
+        "imagepullsecret": null,
+        "pull_policy": "IfNotPresent",
+        "__type__": "ContainerImage"
+      },
+      "x-description": "Triton Inference Server image with a tag (e.g. 26.10-py3) or a sha256 digest. The server is started as `tritonserver --model-repository=/models <extra args>` through the image entrypoint.",
       "x-title": "Triton Server Image"
     },
     "model_repository": {
@@ -600,7 +608,6 @@
   },
   "required": [
     "preset",
-    "image",
     "model_repository"
   ],
   "title": "TritonAppInputs",
