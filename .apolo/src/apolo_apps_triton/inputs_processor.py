@@ -287,9 +287,9 @@ def _check_env_names(input_: TritonAppInputs) -> None:
             raise ValueError(msg)
         if env_var.name.startswith(VERTEX_AI_ENV_PREFIX):
             msg = (
-                f"Environment variable {env_var.name} is not allowed: AIP_MODE="
-                "PREDICTION switches tritonserver to Vertex AI mode and turns its "
-                "HTTP and gRPC services off, so AIP_ variables are refused"
+                f"Environment variable {env_var.name} is not allowed: with AIP_MODE "
+                "set the Triton image runs in Vertex AI mode and the server does "
+                "not serve the HTTP and gRPC endpoints of the app"
             )
             raise ValueError(msg)
 

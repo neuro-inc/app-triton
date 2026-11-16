@@ -27,7 +27,7 @@
 | `server_extra_args` | Arguments appended to the `tritonserver` command. |
 | `hf_cache` | Apolo Files directory mounted read-write at `/root/.cache/huggingface`, with `HF_HOME` pointing there. |
 | `hf_token` | Hugging Face token, passed as `HF_TOKEN`. |
-| `extra_env_vars` | Environment variables of the server container. They come last and override `HF_HOME` and `HF_TOKEN`. Names must be C identifiers; `AIP_*` names are refused: `AIP_MODE=PREDICTION` switches `tritonserver` to Vertex AI mode and turns its HTTP and gRPC services off. |
+| `extra_env_vars` | Environment variables of the server container. They come last and override `HF_HOME` and `HF_TOKEN`. Names must be C identifiers; `AIP_*` names are refused: with `AIP_MODE` set, the image entrypoint puts its own `tritonserver` in front of the app's command and the server stops with `Unexpected argument: tritonserver`; `tritonserver` started directly with `AIP_MODE=PREDICTION` turns its HTTP and gRPC services off. |
 
 ## Outputs
 

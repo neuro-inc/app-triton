@@ -586,7 +586,7 @@ async def test_vertex_ai_env_is_refused(setup_clients, minimal_inputs, name):
         update={"extra_env_vars": [Env(name=name, value="PREDICTION")]}
     )
 
-    with pytest.raises(ValueError, match="turns its HTTP and gRPC services off"):
+    with pytest.raises(ValueError, match="does not serve the HTTP and gRPC endpoints"):
         await generate(setup_clients, inputs)
 
 
