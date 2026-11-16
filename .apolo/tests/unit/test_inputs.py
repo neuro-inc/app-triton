@@ -1,0 +1,456 @@
+import json
+
+import pytest
+from apolo_app_types_fixtures.constants import (
+    APP_ID,
+    APP_SECRETS_NAME,
+    DEFAULT_CLUSTER_NAME,
+    DEFAULT_NAMESPACE,
+    DEFAULT_ORG_NAME,
+    DEFAULT_PROJECT_NAME,
+)
+from apolo_apps_triton.inputs_processor import TritonAppChartValueProcessor
+
+from apolo_app_types.protocols.common import (
+    ApoloAuth,
+    ApoloFilesPath,
+    ApoloSecret,
+    ContainerImage,
+    CustomAuth,
+    Env,
+    IngressGrpc,
+    IngressHttp,
+    NoAuth,
+    Preset,
+)
+from apolo_app_types.protocols.common.hugging_face import (
+    HuggingFaceCache,
+    HuggingFaceToken,
+)
+from apolo_app_types.protocols.common.middleware import AuthIngressMiddleware
+from apolo_app_types.protocols.dockerhub import DockerConfigModel
+from apolo_app_types.protocols.triton import TritonModelRepository
+
+
+PROJECT_ROOT = (
+    f"storage://{DEFAULT_CLUSTER_NAME}/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}"
+)
+HTTP_HOST = f"triton--{APP_ID}.apps.some.org.neu.ro"
+GRPC_HOST = f"triton-grpc--{APP_ID}.apps.some.org.neu.ro"
+AUTH_MIDDLEWARE = {
+    "traefik.ingress.kubernetes.io/router.middlewares": (
+        "platform-platform-control-plane-ingress-auth@kubernetescrd"
+    )
+}
+DISABLED_INGRESS = {"enabled": False, "host": "", "annotations": {}}
+CUSTOM_AUTH = CustomAuth(middleware=AuthIngressMiddleware(name="platform-custom-auth"))
+
+
+async def generate(apolo_client, inputs):
+    processor = TritonAppChartValueProcessor(client=apolo_client)
+    return await processor.gen_extra_values(
+        input_=inputs,
+        app_name="triton-app",
+        namespace=DEFAULT_NAMESPACE,
+        app_secrets_name=APP_SECRETS_NAME,
+        app_id=APP_ID,
+    )
+
+
+def with_args(inputs, *args, **update):
+    return inputs.model_copy(update={"server_extra_args": list(args), **update})
+
+
+def with_repository(inputs, path):
+    return inputs.model_copy(
+        update={
+            "model_repository": TritonModelRepository(
+                files_path=ApoloFilesPath(path=path)
+            )
+        }
+    )
+
+
+async def test_minimal_values(setup_clients, minimal_inputs):
+    values = await generate(setup_clients, minimal_inputs)
+
+    assert values["fullnameOverride"] == f"triton-{APP_ID}"
+    assert values["apolo_app_id"] == APP_ID
+    assert values["preset_name"] == "cpu-small"
+    assert values["image"] == {
+        "repository": "nvcr.io/nvidia/tritonserver",
+        "tag": "26.10-py3",
+        "pullPolicy": "IfNotPresent",
+    }
+    assert values["dockerconfigjson"] is None
+    assert values["resources"]["limits"] == {"cpu": "1000.0m", "memory": "954M"}
+    assert values["podLabels"] == {
+        "platform.apolo.us/component": "app",
+        "platform.apolo.us/preset": "cpu-small",
+        "platform.apolo.us/inject-storage": "true",
+        "platform.apolo.us/org": DEFAULT_ORG_NAME,
+        "platform.apolo.us/project": DEFAULT_PROJECT_NAME,
+    }
+    assert json.loads(values["podAnnotations"]["platform.apolo.us/inject-storage"]) == [
+        {
+            "storage_uri": f"{PROJECT_ROOT}/triton/models",
+            "mount_path": "/models",
+            "mount_mode": "r",
+        }
+    ]
+    assert values["modelRepositoryPath"] == "/models"
+    assert values["serverExtraArgs"] == []
+    assert values["env"] == []
+    assert values["ingress"] == {
+        "className": "traefik",
+        "http": DISABLED_INGRESS,
+        "grpc": DISABLED_INGRESS,
+    }
+
+
+@pytest.mark.parametrize(
+    ("http", "grpc"), [(False, False), (True, False), (False, True), (True, True)]
+)
+async def test_ingress_combinations(setup_clients, minimal_inputs, http, grpc):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "ingress_http": IngressHttp() if http else None,
+            "ingress_grpc": IngressGrpc() if grpc else None,
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    ingress = values["ingress"]
+    assert ingress["className"] == "traefik"
+    assert ingress["http"] == (
+        {"enabled": True, "host": HTTP_HOST, "annotations": AUTH_MIDDLEWARE}
+        if http
+        else DISABLED_INGRESS
+    )
+    assert ingress["grpc"] == (
+        {
+            "enabled": True,
+            "host": GRPC_HOST,
+            "annotations": {
+                "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+                **AUTH_MIDDLEWARE,
+            },
+        }
+        if grpc
+        else DISABLED_INGRESS
+    )
+
+
+async def test_grpc_host_label_parses_as_the_instance_id(setup_clients, minimal_inputs):
+    values = await generate(
+        setup_clients, minimal_inputs.model_copy(update={"ingress_grpc": IngressGrpc()})
+    )
+
+    label = values["ingress"]["grpc"]["host"].split(".")[0]
+    assert len(label) <= 63
+    assert label.split("--", 1)[1] == APP_ID
+
+
+async def test_ingress_without_auth_and_with_custom_auth(setup_clients, minimal_inputs):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "ingress_http": IngressHttp(auth=NoAuth()),
+            "ingress_grpc": IngressGrpc(auth=CUSTOM_AUTH),
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["ingress"]["http"]["annotations"] == {}
+    assert values["ingress"]["grpc"]["annotations"] == {
+        "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+        "traefik.ingress.kubernetes.io/router.middlewares": (
+            "platform-custom-auth@kubernetescrd"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("storage:triton/models", f"{PROJECT_ROOT}/triton/models"),
+        (f"{PROJECT_ROOT}/triton/models", f"{PROJECT_ROOT}/triton/models"),
+        (f"{PROJECT_ROOT}/", f"{PROJECT_ROOT}/"),
+        (f"storage:/{DEFAULT_PROJECT_NAME}/models", f"{PROJECT_ROOT}/models"),
+    ],
+)
+async def test_model_repository_in_the_project(
+    setup_clients, minimal_inputs, path, expected
+):
+    values = await generate(setup_clients, with_repository(minimal_inputs, path))
+
+    mounts = json.loads(values["podAnnotations"]["platform.apolo.us/inject-storage"])
+    assert mounts[0]["storage_uri"] == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"storage://{DEFAULT_CLUSTER_NAME}/{DEFAULT_ORG_NAME}/other-project/models",
+        f"storage://{DEFAULT_CLUSTER_NAME}/other-org/{DEFAULT_PROJECT_NAME}/models",
+        f"storage://other-cluster/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}/models",
+        f"{PROJECT_ROOT}-other/models",
+        "storage:/other-project/models",
+    ],
+)
+async def test_model_repository_outside_the_project_is_refused(
+    setup_clients, minimal_inputs, path
+):
+    with pytest.raises(ValueError, match="must be in the project of the app"):
+        await generate(setup_clients, with_repository(minimal_inputs, path))
+
+
+async def test_hugging_face_cache_and_token(setup_clients, minimal_inputs):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "hf_cache": HuggingFaceCache(
+                files_path=ApoloFilesPath(path="storage:.apps/hugging-face-cache")
+            ),
+            "hf_token": HuggingFaceToken(
+                token_name="hf", token=ApoloSecret(key="hf-token")
+            ),
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert json.loads(values["podAnnotations"]["platform.apolo.us/inject-storage"]) == [
+        {
+            "storage_uri": f"{PROJECT_ROOT}/triton/models",
+            "mount_path": "/models",
+            "mount_mode": "r",
+        },
+        {
+            "storage_uri": f"{PROJECT_ROOT}/.apps/hugging-face-cache",
+            "mount_path": "/root/.cache/huggingface",
+            "mount_mode": "rw",
+        },
+    ]
+    assert values["env"] == [
+        {"name": "HF_HOME", "value": "/root/.cache/huggingface"},
+        {
+            "name": "HF_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {"name": APP_SECRETS_NAME, "key": "hf-token"}
+            },
+        },
+    ]
+
+
+async def test_extra_env_comes_last_and_overrides(setup_clients, minimal_inputs):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "hf_cache": HuggingFaceCache(
+                files_path=ApoloFilesPath(path="storage:hf-cache")
+            ),
+            "hf_token": HuggingFaceToken(
+                token_name="hf", token=ApoloSecret(key="hf-token")
+            ),
+            "extra_env_vars": [
+                Env(name="HF_HOME", value="/root/.cache/huggingface/custom"),
+                Env(name="IT323_EXTRA", value="ok"),
+                Env(name="IT323_SECRET", value=ApoloSecret(key="it323-secret")),
+            ],
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["env"] == [
+        {
+            "name": "HF_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {"name": APP_SECRETS_NAME, "key": "hf-token"}
+            },
+        },
+        {"name": "HF_HOME", "value": "/root/.cache/huggingface/custom"},
+        {"name": "IT323_EXTRA", "value": "ok"},
+        {
+            "name": "IT323_SECRET",
+            "valueFrom": {
+                "secretKeyRef": {"name": APP_SECRETS_NAME, "key": "it323-secret"}
+            },
+        },
+    ]
+
+
+async def test_server_extra_args_are_passed_through(setup_clients, minimal_inputs):
+    args = ["--log-verbose=1", "--exit-on-error=false", "--strict-readiness=false"]
+
+    values = await generate(setup_clients, with_args(minimal_inputs, *args))
+
+    assert values["serverExtraArgs"] == args
+
+
+@pytest.mark.parametrize(
+    ("args", "flags"),
+    [
+        (["--http-port=9000"], "--http-port"),
+        (["--http-port", "9000"], "--http-port"),
+        (["--http-p=9000"], "--http-port"),
+        (["--http-port=9000", "--http-port=9100"], "--http-port"),
+        (["--log-verbose=1", "--grpc-port=9001"], "--grpc-port"),
+        (["--metrics-port=9002"], "--metrics-port"),
+        (["--http-address=127.0.0.1"], "--http-address"),
+        (["--grpc-address=127.0.0.1"], "--grpc-address"),
+        (["--metrics-address=127.0.0.1"], "--metrics-address"),
+        (["--allow-http=false"], "--allow-http"),
+        (["--allow-grpc=false"], "--allow-grpc"),
+        (["--grpc-use-ssl=true"], "--grpc-use-ssl"),
+        (["--grpc-use-ssl-mutual=true"], "--grpc-use-ssl-mutual"),
+        (["--grpc-use-ssl-m=true"], "--grpc-use-ssl-mutual"),
+        (["--grpc-server-cert", "/c"], "--grpc-server-cert"),
+        (["--grpc-server-key=/k"], "--grpc-server-key"),
+        (["--grpc-root-cert=/r"], "--grpc-root-cert"),
+        (["--http-port=9000", "--grpc-port=9001"], "--grpc-port, --http-port"),
+    ],
+)
+async def test_forbidden_server_args_are_refused(
+    setup_clients, minimal_inputs, args, flags
+):
+    with pytest.raises(ValueError, match=f"must not set {flags}:"):
+        await generate(setup_clients, with_args(minimal_inputs, *args))
+
+
+@pytest.mark.parametrize("arg", ["--http=9000", "--grpc-use=true", "--allow=true"])
+async def test_ambiguous_server_args_are_refused(setup_clients, minimal_inputs, arg):
+    with pytest.raises(ValueError, match="is ambiguous"):
+        await generate(setup_clients, with_args(minimal_inputs, arg))
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--allow-metrics=false"],
+        ["--http-restricted-api=model-repository:admin-key=secret"],
+        ["--grpc-restricted-protocol=model-repository:admin-key=secret"],
+        ["--allow-sagemaker=true"],
+        ["--allow-vertex-ai=true"],
+        ["--model-store=/models"],
+        ["--log-verbose", "1"],
+        ["--unknown-flag=1"],
+        ["plain-value"],
+    ],
+)
+async def test_allowed_server_args(setup_clients, minimal_inputs, args):
+    values = await generate(setup_clients, with_args(minimal_inputs, *args))
+
+    assert values["serverExtraArgs"] == args
+
+
+EXPLICIT_MODE_ARGS = [
+    ["--model-control-mode=explicit"],
+    ["--model-control-mode=EXPLICIT"],
+    ["--model-control-mode", "explicit"],
+    ["--model-control=explicit"],
+    ["--model-control-mode=explicit", "--load-model=*"],
+    ["--model-control-mode=none", "--model-control-mode=explicit"],
+]
+
+
+@pytest.mark.parametrize("args", EXPLICIT_MODE_ARGS)
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"ingress_http": IngressHttp(auth=NoAuth())},
+        {"ingress_grpc": IngressGrpc(auth=NoAuth())},
+        {"ingress_http": IngressHttp(), "ingress_grpc": IngressGrpc(auth=NoAuth())},
+    ],
+)
+async def test_explicit_mode_with_an_open_endpoint_is_refused(
+    setup_clients, minimal_inputs, args, update
+):
+    with pytest.raises(ValueError, match="without authentication is not allowed"):
+        await generate(setup_clients, with_args(minimal_inputs, *args, **update))
+
+
+@pytest.mark.parametrize("args", EXPLICIT_MODE_ARGS)
+@pytest.mark.parametrize(
+    "update",
+    [
+        {},
+        {"ingress_http": IngressHttp(), "ingress_grpc": IngressGrpc()},
+        {"ingress_http": IngressHttp(auth=ApoloAuth())},
+        {
+            "ingress_http": IngressHttp(auth=CUSTOM_AUTH),
+            "ingress_grpc": IngressGrpc(auth=CUSTOM_AUTH),
+        },
+    ],
+)
+async def test_explicit_mode_with_authentication_is_accepted(
+    setup_clients, minimal_inputs, args, update
+):
+    values = await generate(setup_clients, with_args(minimal_inputs, *args, **update))
+
+    assert values["serverExtraArgs"] == args
+
+
+@pytest.mark.parametrize(
+    "args",
+    [[], ["--model-control-mode=none"], ["--model-control-mode=poll"]],
+)
+async def test_open_endpoints_without_explicit_mode_are_accepted(
+    setup_clients, minimal_inputs, args
+):
+    inputs = with_args(
+        minimal_inputs,
+        *args,
+        ingress_http=IngressHttp(auth=NoAuth()),
+        ingress_grpc=IngressGrpc(auth=NoAuth()),
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["ingress"]["http"]["annotations"] == {}
+    assert values["ingress"]["grpc"]["annotations"] == {
+        "traefik.ingress.kubernetes.io/router.entrypoints": "websecure"
+    }
+
+
+@pytest.mark.parametrize(
+    ("preset", "memory"), [("cpu-small", "954M"), ("cpu-large", "16384M")]
+)
+async def test_presets_with_enough_memory(
+    setup_clients, minimal_inputs, preset, memory
+):
+    inputs = minimal_inputs.model_copy(update={"preset": Preset(name=preset)})
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["resources"]["limits"]["memory"] == memory
+
+
+@pytest.mark.parametrize(("preset", "mib"), [("cpu-micro", 100), ("cpu-900", 900)])
+async def test_presets_with_too_little_memory_are_refused(
+    setup_clients, minimal_inputs, preset, mib
+):
+    inputs = minimal_inputs.model_copy(update={"preset": Preset(name=preset)})
+
+    with pytest.raises(
+        ValueError, match=f"has {mib} MiB of memory, Triton needs at least 1 GB"
+    ):
+        await generate(setup_clients, inputs)
+
+
+async def test_private_image_gets_a_pull_secret(setup_clients, minimal_inputs):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "image": ContainerImage(
+                repository="registry.example.com/triton",
+                tag="custom",
+                imagepullsecret=DockerConfigModel(filecontents="e30="),
+            )
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert values["image"]["repository"] == "registry.example.com/triton"
+    assert values["image"]["tag"] == "custom"
+    assert values["dockerconfigjson"] == "e30="

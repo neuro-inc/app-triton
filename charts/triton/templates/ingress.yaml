@@ -1,0 +1,51 @@
+{{- if .Values.ingress.http.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "triton.fullname" . }}
+  labels:
+    {{- include "triton.labels" . | nindent 4 }}
+  {{- with .Values.ingress.http.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.http.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "triton.fullname" . }}
+                port:
+                  name: http
+{{- end }}
+{{- if .Values.ingress.grpc.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "triton.grpcServiceName" . }}
+  labels:
+    {{- include "triton.labels" . | nindent 4 }}
+  {{- with .Values.ingress.grpc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.grpc.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "triton.grpcServiceName" . }}
+                port:
+                  name: grpc
+{{- end }}

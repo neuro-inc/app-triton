@@ -1,0 +1,354 @@
+import typing as t
+
+import apolo_sdk
+
+from apolo_app_types.app_types import AppType
+from apolo_app_types.helm.apps.base import BaseChartValueProcessor
+from apolo_app_types.helm.apps.common import (
+    append_apolo_storage_integration_annotations,
+    gen_apolo_storage_integration_labels,
+    gen_extra_values,
+    get_preset,
+)
+from apolo_app_types.helm.utils.images import (
+    get_image_docker_url,
+    resolve_image_dockerconfig,
+)
+from apolo_app_types.protocols.common import (
+    ApoloFilesMount,
+    ApoloMountMode,
+    IngressGrpc,
+    IngressHttp,
+    MountPath,
+    NoAuth,
+)
+from apolo_app_types.protocols.common.secrets_ import serialize_optional_secret
+from apolo_app_types.protocols.common.storage import ApoloFilesPath, ApoloMountModes
+from apolo_apps_triton.app_types import TritonAppInputs
+
+
+FULLNAME_PREFIX = "triton"
+MODEL_REPOSITORY_PATH = "/models"
+HF_CACHE_PATH = "/root/.cache/huggingface"
+MEBIBYTE = 1 << 20
+MIN_MEMORY_MIB = 950
+INGRESS_CLASS_NAME = "traefik"
+SERVERS_SCHEME_ANNOTATION = "traefik.ingress.kubernetes.io/service.serversscheme"
+MODEL_CONTROL_MODE_FLAG = "--model-control-mode"
+EXPLICIT_MODE = "explicit"
+FORBIDDEN_FLAGS = frozenset(
+    {
+        "--http-port",
+        "--grpc-port",
+        "--metrics-port",
+        "--http-address",
+        "--grpc-address",
+        "--metrics-address",
+        "--allow-http",
+        "--allow-grpc",
+        "--grpc-use-ssl",
+        "--grpc-use-ssl-mutual",
+        "--grpc-server-cert",
+        "--grpc-server-key",
+        "--grpc-root-cert",
+    }
+)
+SERVER_FLAGS = frozenset(
+    {
+        *FORBIDDEN_FLAGS,
+        MODEL_CONTROL_MODE_FLAG,
+        "--allow-client-shm",
+        "--allow-cpu-metrics",
+        "--allow-gpu-metrics",
+        "--allow-metrics",
+        "--allow-sagemaker",
+        "--allow-vertex-ai",
+        "--backend-config",
+        "--backend-directory",
+        "--buffer-manager-thread-count",
+        "--cache-config",
+        "--cache-directory",
+        "--cuda-memory-pool-byte-size",
+        "--cuda-virtual-address-size",
+        "--disable-auto-complete-config",
+        "--enable-peer-access",
+        "--exit-on-error",
+        "--exit-timeout-secs",
+        "--grpc-header-forward-pattern",
+        "--grpc-http2-max-ping-strikes",
+        "--grpc-http2-max-pings-without-data",
+        "--grpc-http2-min-recv-ping-interval-without-data",
+        "--grpc-infer-allocation-pool-size",
+        "--grpc-infer-response-compression-level",
+        "--grpc-infer-thread-count",
+        "--grpc-keepalive-permit-without-calls",
+        "--grpc-keepalive-time",
+        "--grpc-keepalive-timeout",
+        "--grpc-max-connection-age",
+        "--grpc-max-connection-age-grace",
+        "--grpc-max-response-pool-size",
+        "--grpc-restricted-protocol",
+        "--help",
+        "--host-policy",
+        "--http-header-forward-pattern",
+        "--http-max-input-size",
+        "--http-restricted-api",
+        "--http-thread-count",
+        "--id",
+        "--load-model",
+        "--log-error",
+        "--log-file",
+        "--log-format",
+        "--log-info",
+        "--log-verbose",
+        "--log-warning",
+        "--metrics-config",
+        "--metrics-interval-ms",
+        "--min-supported-compute-capability",
+        "--model-config-name",
+        "--model-load-gpu-limit",
+        "--model-load-retry-count",
+        "--model-load-thread-count",
+        "--model-namespacing",
+        "--model-repository",
+        "--model-store",
+        "--pinned-memory-pool-byte-size",
+        "--rate-limit",
+        "--rate-limit-resource",
+        "--repoagent-directory",
+        "--repository-poll-secs",
+        "--response-cache-byte-size",
+        "--reuse-grpc-port",
+        "--reuse-http-port",
+        "--sagemaker-port",
+        "--sagemaker-safe-port-range",
+        "--sagemaker-thread-count",
+        "--strict-model-config",
+        "--strict-readiness",
+        "--trace-config",
+        "--trace-count",
+        "--trace-file",
+        "--trace-level",
+        "--trace-log-frequency",
+        "--trace-rate",
+        "--vertex-ai-default-model",
+        "--vertex-ai-port",
+        "--vertex-ai-thread-count",
+    }
+)
+
+
+def get_fullname(app_id: str) -> str:
+    return f"{FULLNAME_PREFIX}-{app_id}"
+
+
+def _resolve_flag(name: str) -> str | None:
+    if name in SERVER_FLAGS:
+        return name
+    matches = sorted(flag for flag in SERVER_FLAGS if flag.startswith(name))
+    if len(matches) > 1:
+        msg = (
+            f"Server extra argument {name} is ambiguous: "
+            f"it may mean {', '.join(matches)}"
+        )
+        raise ValueError(msg)
+    return matches[0] if matches else None
+
+
+def _parse_server_args(args: list[str]) -> list[tuple[str, str]]:
+    parsed = []
+    for index, arg in enumerate(args):
+        if not arg.startswith("--") or arg == "--":
+            continue
+        name, separator, value = arg.partition("=")
+        flag = _resolve_flag(name)
+        if flag is None:
+            continue
+        if not separator:
+            value = args[index + 1] if index + 1 < len(args) else ""
+        parsed.append((flag, value))
+    return parsed
+
+
+def _is_open(ingress: IngressHttp | IngressGrpc | None) -> bool:
+    return ingress is not None and isinstance(ingress.auth, NoAuth)
+
+
+def _check_server_args(input_: TritonAppInputs) -> None:
+    parsed = _parse_server_args(input_.server_extra_args)
+    forbidden = sorted({flag for flag, _ in parsed if flag in FORBIDDEN_FLAGS})
+    if forbidden:
+        msg = (
+            f"Server extra arguments must not set {', '.join(forbidden)}: "
+            "ports, addresses and gRPC TLS are managed by the app"
+        )
+        raise ValueError(msg)
+    explicit = any(
+        flag == MODEL_CONTROL_MODE_FLAG and value.strip().lower() == EXPLICIT_MODE
+        for flag, value in parsed
+    )
+    if explicit and (_is_open(input_.ingress_http) or _is_open(input_.ingress_grpc)):
+        msg = (
+            "--model-control-mode=explicit lets callers load and unload models, "
+            "so a public endpoint without authentication is not allowed with it"
+        )
+        raise ValueError(msg)
+
+
+def _get_model_repository(
+    client: apolo_sdk.Client, input_: TritonAppInputs
+) -> ApoloFilesPath:
+    files_path = input_.model_repository.files_path.get_absolute_path_model(client)
+    config = client.config
+    project_root = "/".join(
+        part
+        for part in (
+            f"storage://{config.cluster_name}",
+            config.org_name,
+            config.project_name,
+        )
+        if part
+    )
+    path = files_path.path.rstrip("/")
+    if path != project_root and not path.startswith(f"{project_root}/"):
+        msg = (
+            f"Model repository {input_.model_repository.files_path.path} must be "
+            f"in the project of the app ({project_root})"
+        )
+        raise ValueError(msg)
+    return files_path
+
+
+def _build_env(
+    input_: TritonAppInputs, app_secrets_name: str
+) -> list[dict[str, t.Any]]:
+    env: dict[str, t.Any] = {}
+    if input_.hf_cache:
+        env["HF_HOME"] = HF_CACHE_PATH
+    if input_.hf_token:
+        env["HF_TOKEN"] = serialize_optional_secret(
+            input_.hf_token.token, app_secrets_name
+        )
+    for env_var in input_.extra_env_vars:
+        env.pop(env_var.name, None)
+        env[env_var.name] = env_var.deserialize_value(app_secrets_name)
+    return [
+        {"name": name, **value}
+        if isinstance(value, dict)
+        else {"name": name, "value": str(value)}
+        for name, value in env.items()
+    ]
+
+
+def _build_ingress(
+    input_: TritonAppInputs, extra_values: dict[str, t.Any]
+) -> dict[str, t.Any]:
+    ingress = extra_values.get("ingress") or {}
+    grpc = ingress.get("grpc") or {}
+    http_enabled = input_.ingress_http is not None
+    grpc_enabled = input_.ingress_grpc is not None
+    return {
+        "className": INGRESS_CLASS_NAME,
+        "http": {
+            "enabled": http_enabled,
+            "host": ingress["hosts"][0]["host"] if http_enabled else "",
+            "annotations": ingress.get("annotations", {}) if http_enabled else {},
+        },
+        "grpc": {
+            "enabled": grpc_enabled,
+            "host": grpc["hosts"][0]["host"] if grpc_enabled else "",
+            "annotations": {
+                key: value
+                for key, value in grpc.get("annotations", {}).items()
+                if key != SERVERS_SCHEME_ANNOTATION
+            }
+            if grpc_enabled
+            else {},
+        },
+    }
+
+
+class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
+    async def gen_extra_values(
+        self,
+        input_: TritonAppInputs,
+        app_name: str,
+        namespace: str,
+        app_id: str,
+        app_secrets_name: str,
+        *args: t.Any,
+        **kwargs: t.Any,
+    ) -> dict[str, t.Any]:
+        _check_server_args(input_)
+        preset = get_preset(self.client, input_.preset.name)
+        memory_mib = preset.memory // MEBIBYTE
+        if memory_mib < MIN_MEMORY_MIB:
+            msg = (
+                f"Preset {input_.preset.name} has {memory_mib} MiB of memory, "
+                "Triton needs at least 1 GB"
+            )
+            raise ValueError(msg)
+        model_repository = _get_model_repository(self.client, input_)
+
+        extra_values = await gen_extra_values(
+            apolo_client=self.client,
+            preset_type=input_.preset,
+            app_id=app_id,
+            app_type=AppType.Triton,
+            namespace=namespace,
+            ingress_http=input_.ingress_http,
+            ingress_grpc=input_.ingress_grpc,
+        )
+
+        mounts = [
+            ApoloFilesMount(
+                storage_uri=model_repository,
+                mount_path=MountPath(path=MODEL_REPOSITORY_PATH),
+                mode=ApoloMountMode(mode=ApoloMountModes.RO),
+            )
+        ]
+        if input_.hf_cache:
+            mounts.append(
+                ApoloFilesMount(
+                    storage_uri=input_.hf_cache.files_path,
+                    mount_path=MountPath(path=HF_CACHE_PATH),
+                    mode=ApoloMountMode(mode=ApoloMountModes.RW),
+                )
+            )
+
+        image = input_.image
+        image_url = await get_image_docker_url(
+            client=self.client, image=image.repository, tag=image.tag or "latest"
+        )
+        repository, tag = image_url.rsplit(":", 1)
+        dockerconfig = await resolve_image_dockerconfig(
+            client=self.client, image=image, sa_name=f"triton-{app_name}"
+        )
+
+        return {
+            "fullnameOverride": get_fullname(app_id),
+            "apolo_app_id": extra_values["apolo_app_id"],
+            "preset_name": extra_values["preset_name"],
+            "image": {
+                "repository": repository,
+                "tag": tag,
+                "pullPolicy": image.pull_policy.value,
+            },
+            "dockerconfigjson": dockerconfig.filecontents if dockerconfig else None,
+            "resources": extra_values["resources"],
+            "tolerations": extra_values["tolerations"],
+            "affinity": extra_values["affinity"],
+            "podLabels": {
+                **extra_values["podLabels"],
+                **gen_apolo_storage_integration_labels(
+                    client=self.client, inject_storage=True
+                ),
+            },
+            "podAnnotations": append_apolo_storage_integration_annotations(
+                {}, mounts, self.client
+            ),
+            "modelRepositoryPath": MODEL_REPOSITORY_PATH,
+            "serverExtraArgs": input_.server_extra_args,
+            "env": _build_env(input_, app_secrets_name),
+            "ingress": _build_ingress(input_, extra_values),
+        }
