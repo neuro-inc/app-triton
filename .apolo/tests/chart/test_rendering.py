@@ -242,6 +242,35 @@ async def test_server_args_are_not_expanded_by_kubernetes(
     ]
 
 
+async def test_env_values_are_not_expanded_by_kubernetes(
+    setup_clients, minimal_inputs, tmp_path
+):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "extra_env_vars": [
+                Env(name="PW", value="pa$$word"),
+                Env(name="COPY", value="$(HF_TOKEN)"),
+                Env(name="PLAIN", value="ok"),
+                Env(name="SECRET", value=ApoloSecret(key="it323-secret")),
+            ]
+        }
+    )
+
+    manifests = render(await generate(setup_clients, inputs), tmp_path)
+
+    assert get_container(manifests)["env"] == [
+        {"name": "PW", "value": "pa$$$$word"},
+        {"name": "COPY", "value": "$$(HF_TOKEN)"},
+        {"name": "PLAIN", "value": "ok"},
+        {
+            "name": "SECRET",
+            "valueFrom": {
+                "secretKeyRef": {"name": APP_SECRETS_NAME, "key": "it323-secret"}
+            },
+        },
+    ]
+
+
 async def test_image_digest(setup_clients, minimal_inputs, tmp_path):
     digest = "sha256:" + "a" * 64
     inputs = minimal_inputs.model_copy(

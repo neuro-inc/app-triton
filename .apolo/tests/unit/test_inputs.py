@@ -614,6 +614,9 @@ UNSAFE_STORAGE_PATHS = [
     f"{PROJECT_ROOT}/a%0Ab",
     f"{PROJECT_ROOT}/a%7Fb",
     "storage:triton/a%09b",
+    f"{PROJECT_ROOT}/a%C2%85b",
+    f"{PROJECT_ROOT}/a%C2%80b",
+    "storage:triton/a\u0085b",
 ]
 
 
@@ -714,4 +717,24 @@ async def test_bad_digest_references_are_refused(
     )
 
     with pytest.raises(ValueError, match="a digest must be sha256"):
+        await generate(real_image_parser, inputs)
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        f"@{DIGEST}",
+        f" @{DIGEST}",
+        f"UPPER/Case Name with spaces@{DIGEST}",
+        f"-nginx@{DIGEST}",
+    ],
+)
+async def test_invalid_image_names_with_a_digest_are_refused(
+    real_image_parser, minimal_inputs, repository
+):
+    inputs = minimal_inputs.model_copy(
+        update={"image": ContainerImage(repository=repository)}
+    )
+
+    with pytest.raises(ValueError, match="image"):
         await generate(real_image_parser, inputs)

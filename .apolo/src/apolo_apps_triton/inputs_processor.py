@@ -1,5 +1,6 @@
 import re
 import typing as t
+import unicodedata
 
 import apolo_sdk
 from yarl import URL
@@ -228,7 +229,7 @@ def _check_server_args(input_: TritonAppInputs) -> None:
 
 
 def _has_control_characters(value: str) -> bool:
-    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+    return any(unicodedata.category(char) == "Cc" for char in value)
 
 
 def _refuse_storage_path(files_path: ApoloFilesPath, title: str) -> t.NoReturn:
@@ -307,6 +308,7 @@ async def _get_image(
                 "on an image outside the platform registry"
             )
             raise ValueError(msg)
+        await get_image_docker_url(client=client, image=name, tag="latest")
         return {"repository": name, "tag": "", "digest": digest}
     image_url = await get_image_docker_url(
         client=client, image=repository, tag=tag or "latest"

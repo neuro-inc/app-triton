@@ -53,7 +53,15 @@ spec:
               protocol: TCP
           {{- with .Values.env }}
           env:
-            {{- toYaml . | nindent 12 }}
+            {{- range . }}
+            - name: {{ .name | quote }}
+              {{- if hasKey . "valueFrom" }}
+              valueFrom:
+                {{- toYaml .valueFrom | nindent 16 }}
+              {{- else }}
+              value: {{ .value | toString | replace "$" "$$" | quote }}
+              {{- end }}
+            {{- end }}
           {{- end }}
           startupProbe:
             httpGet:

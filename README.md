@@ -64,6 +64,7 @@ The metrics port 8002 is reachable inside the project only and is not an output.
 - With the default arguments a model that fails to load stops the server before it listens: the pod restarts, and the Deployment reports `ProgressDeadlineExceeded` once `progressDeadlineSeconds` has passed. `--exit-on-error=false --strict-readiness=false` serves the models that loaded instead; `--exit-on-error=false` alone keeps the server up but not ready.
 - An empty model repository starts a server that reports ready and serves nothing.
 - Server arguments reach `tritonserver` as typed: besides the refusal of `$(` in the processor, the chart doubles every `$`, so Kubernetes passes `$(VAR)` literally.
+- Environment variable values reach the container as typed too: the chart doubles every `$` in plain values (not in values taken from secrets), so `pa$$word` stays `pa$$word` and `$(HF_TOKEN)` is not replaced with the token.
 - Loading and unloading models through the repository API works only in `--model-control-mode=explicit`; in the default mode both return an error.
 - Public gRPC needs HTTP/2 from the client to Traefik. Send the platform token as `authorization: Bearer <token>` call metadata. A call without a token fails with the HTTP status of the platform authentication instead of a gRPC status: 302 without a token, 403 with a bearer that is not a platform token.
 - Triton also serves `grpc.health.v1.Health` on the gRPC port.
