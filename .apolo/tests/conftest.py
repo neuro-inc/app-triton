@@ -30,9 +30,9 @@ PRESETS = {
         credits_per_hour=Decimal("0.01"),
         available_resource_pool_names=("cpu_pool",),
     ),
-    "cpu-900": Preset(
+    "cpu-999": Preset(
         cpu=1.0,
-        memory=900 * MEBIBYTE,
+        memory=10**9 - 1,
         credits_per_hour=Decimal("0.1"),
         available_resource_pool_names=("cpu_pool",),
     ),

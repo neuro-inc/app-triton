@@ -44,14 +44,14 @@ The metrics port 8002 is reachable inside the project only and is not an output.
 - Mounts the model repository read-only at `/models` and the Hugging Face cache read-write through the platform storage injection, and always labels the pod for it.
 - Refuses a model repository or Hugging Face cache outside the project of the app, and a path with a `..` segment, also an encoded one (`..%2f`).
 - Mounts the decoded path: `storage:my models` is mounted from the directory `my models`, not `my%20models`.
-- Refuses server arguments that would make a port unreachable or turn on gRPC TLS: `--http-port`, `--grpc-port`, `--metrics-port`, `--http-address`, `--grpc-address`, `--metrics-address`, `--allow-http`, `--allow-grpc`, `--grpc-use-ssl`, `--grpc-use-ssl-mutual`, `--grpc-server-cert`, `--grpc-server-key`, `--grpc-root-cert`. Arguments are read the way `tritonserver` reads them: `--flag=value` or `--flag value`, and any unambiguous prefix of a flag (`--http-p=9000` is `--http-port=9000`). An ambiguous prefix such as `--http=9000` is refused too; `tritonserver` would not start with it.
-- Refuses `--model-control-mode=explicit` (in any spelling `tritonserver` accepts, e.g. `--model-control=EXPLICIT`) while a public endpoint has no authentication: in explicit mode the HTTP and gRPC APIs load and unload models, including model files sent in the request.
-- Refuses presets with less than 1 GB of memory. An idle server with five small Python models used 223 MiB, and 731 MiB after three 100 MB requests.
+- Refuses server arguments that would make a port unreachable or turn on gRPC TLS: `--http-port`, `--grpc-port`, `--metrics-port`, `--http-address`, `--grpc-address`, `--metrics-address`, `--allow-http`, `--allow-grpc`, `--grpc-use-ssl`, `--grpc-use-ssl-mutual`, `--grpc-server-cert`, `--grpc-server-key`, `--grpc-root-cert`. Arguments are read the way `tritonserver` reads them: `--flag=value` or `--flag value`, and any unambiguous prefix of a flag (`--http-p=9000` is `--http-port=9000`). An ambiguous prefix such as `--http=9000` and an empty item are refused too; `tritonserver` would not start with them.
+- Refuses `--model-control-mode=explicit` (in any spelling `tritonserver` accepts, e.g. `--model-control=EXPLICIT`) while a public endpoint has no authentication. When the flag is repeated, the last one counts, as in `tritonserver`. The reason: in explicit mode the HTTP and gRPC APIs load and unload models, including model files sent in the request.
+- Refuses presets with less than 1 GB of memory. An idle server with five small Python models used 223 MiB and peaked at 731 MiB during three 100 MB requests.
 - Moves the `service.serversscheme: h2c` annotation from the gRPC Ingress to the gRPC Service, where Traefik reads it.
 
 ## Chart defaults
 
-| Value | Default | Why |
+| Setting | Default | Why |
 | --- | --- | --- |
 | `strategy` | `Recreate` | A second pod during a rollout would need a second set of resources, a GPU included. |
 | `probe.startup` | `/v2/health/live` every 10 s, 180 failures | Triton loads every model before it listens, so the server has 30 minutes to load the repository. |
@@ -63,7 +63,7 @@ The metrics port 8002 is reachable inside the project only and is not an output.
 
 - With the default arguments a model that fails to load stops the server before it listens: the pod restarts, and the Deployment reports `ProgressDeadlineExceeded` once `progressDeadlineSeconds` has passed. `--exit-on-error=false --strict-readiness=false` serves the models that loaded instead; `--exit-on-error=false` alone keeps the server up but not ready.
 - An empty model repository starts a server that reports ready and serves nothing.
-- The model repository API answers only in `--model-control-mode=explicit`; in the default mode load and unload return an error.
+- Loading and unloading models through the repository API works only in `--model-control-mode=explicit`; in the default mode both return an error.
 - Public gRPC needs HTTP/2 from the client to Traefik. Send the platform token as `authorization: Bearer <token>` call metadata. A call without a token fails with the HTTP status of the platform authentication instead of a gRPC status: 302 without a token, 403 with a bearer that is not a platform token.
 - Triton also serves `grpc.health.v1.Health` on the gRPC port.
 

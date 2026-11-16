@@ -372,6 +372,14 @@ async def test_forbidden_server_args_are_refused(
         await generate(setup_clients, with_args(minimal_inputs, *args))
 
 
+@pytest.mark.parametrize(
+    "args", [[""], ["   "], ["--log-verbose=1", ""], ["--log-verbose", " "]]
+)
+async def test_empty_server_args_are_refused(setup_clients, minimal_inputs, args):
+    with pytest.raises(ValueError, match="must not contain empty items"):
+        await generate(setup_clients, with_args(minimal_inputs, *args))
+
+
 @pytest.mark.parametrize("arg", ["--http=9000", "--grpc-use=true", "--allow=true"])
 async def test_ambiguous_server_args_are_refused(setup_clients, minimal_inputs, arg):
     with pytest.raises(ValueError, match="is ambiguous"):
@@ -405,6 +413,7 @@ EXPLICIT_MODE_ARGS = [
     ["--model-control=explicit"],
     ["--model-control-mode=explicit", "--load-model=*"],
     ["--model-control-mode=none", "--model-control-mode=explicit"],
+    ["--model-control-mode=none", "--model-control-mode", "Explicit"],
 ]
 
 
@@ -447,7 +456,13 @@ async def test_explicit_mode_with_authentication_is_accepted(
 
 @pytest.mark.parametrize(
     "args",
-    [[], ["--model-control-mode=none"], ["--model-control-mode=poll"]],
+    [
+        [],
+        ["--model-control-mode=none"],
+        ["--model-control-mode=poll"],
+        ["--model-control-mode=explicit", "--model-control-mode=none"],
+        ["--model-control=EXPLICIT", "--model-control-mode", "poll"],
+    ],
 )
 async def test_open_endpoints_without_explicit_mode_are_accepted(
     setup_clients, minimal_inputs, args
@@ -480,14 +495,14 @@ async def test_presets_with_enough_memory(
     assert values["resources"]["limits"]["memory"] == memory
 
 
-@pytest.mark.parametrize(("preset", "mib"), [("cpu-micro", 100), ("cpu-900", 900)])
+@pytest.mark.parametrize(("preset", "mb"), [("cpu-micro", 104), ("cpu-999", 999)])
 async def test_presets_with_too_little_memory_are_refused(
-    setup_clients, minimal_inputs, preset, mib
+    setup_clients, minimal_inputs, preset, mb
 ):
     inputs = minimal_inputs.model_copy(update={"preset": Preset(name=preset)})
 
     with pytest.raises(
-        ValueError, match=f"has {mib} MiB of memory, Triton needs at least 1 GB"
+        ValueError, match=f"has {mb} MB of memory, Triton needs at least 1 GB"
     ):
         await generate(setup_clients, inputs)
 

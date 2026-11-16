@@ -31,8 +31,7 @@ from apolo_apps_triton.app_types import TritonAppInputs
 FULLNAME_PREFIX = "triton"
 MODEL_REPOSITORY_PATH = "/models"
 HF_CACHE_PATH = "/root/.cache/huggingface"
-MEBIBYTE = 1 << 20
-MIN_MEMORY_MIB = 950
+MIN_MEMORY_BYTES = 10**9
 INGRESS_CLASS_NAME = "traefik"
 SERVERS_SCHEME_ANNOTATION = "traefik.ingress.kubernetes.io/service.serversscheme"
 MODEL_CONTROL_MODE_FLAG = "--model-control-mode"
@@ -176,6 +175,12 @@ def _is_open(ingress: IngressHttp | IngressGrpc | None) -> bool:
 
 
 def _check_server_args(input_: TritonAppInputs) -> None:
+    if any(not arg.strip() for arg in input_.server_extra_args):
+        msg = (
+            "Server extra arguments must not contain empty items: "
+            "tritonserver stops on them"
+        )
+        raise ValueError(msg)
     parsed = _parse_server_args(input_.server_extra_args)
     forbidden = sorted({flag for flag, _ in parsed if flag in FORBIDDEN_FLAGS})
     if forbidden:
@@ -184,11 +189,16 @@ def _check_server_args(input_: TritonAppInputs) -> None:
             "ports, addresses and gRPC TLS are managed by the app"
         )
         raise ValueError(msg)
-    explicit = any(
-        flag == MODEL_CONTROL_MODE_FLAG and value.strip().lower() == EXPLICIT_MODE
+    modes = [
+        value.strip().lower()
         for flag, value in parsed
-    )
-    if explicit and (_is_open(input_.ingress_http) or _is_open(input_.ingress_grpc)):
+        if flag == MODEL_CONTROL_MODE_FLAG
+    ]
+    if (
+        modes
+        and modes[-1] == EXPLICIT_MODE
+        and (_is_open(input_.ingress_http) or _is_open(input_.ingress_grpc))
+    ):
         msg = (
             "--model-control-mode=explicit lets callers load and unload models, "
             "so a public endpoint without authentication is not allowed with it"
@@ -279,11 +289,10 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
     ) -> dict[str, t.Any]:
         _check_server_args(input_)
         preset = get_preset(self.client, input_.preset.name)
-        memory_mib = preset.memory // MEBIBYTE
-        if memory_mib < MIN_MEMORY_MIB:
+        if preset.memory < MIN_MEMORY_BYTES:
             msg = (
-                f"Preset {input_.preset.name} has {memory_mib} MiB of memory, "
-                "Triton needs at least 1 GB"
+                f"Preset {input_.preset.name} has {preset.memory // 10**6} MB "
+                "of memory, Triton needs at least 1 GB"
             )
             raise ValueError(msg)
         model_repository = _get_project_path(
