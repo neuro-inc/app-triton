@@ -1,6 +1,7 @@
 import typing as t
 
 import apolo_sdk
+from yarl import URL
 
 from apolo_app_types.app_types import AppType
 from apolo_app_types.helm.apps.base import BaseChartValueProcessor
@@ -195,28 +196,25 @@ def _check_server_args(input_: TritonAppInputs) -> None:
         raise ValueError(msg)
 
 
-def _get_model_repository(
-    client: apolo_sdk.Client, input_: TritonAppInputs
+def _get_project_path(
+    client: apolo_sdk.Client, files_path: ApoloFilesPath, title: str
 ) -> ApoloFilesPath:
-    files_path = input_.model_repository.files_path.get_absolute_path_model(client)
+    uri = URL(files_path.get_absolute_path_model(client).path)
     config = client.config
-    project_root = "/".join(
-        part
-        for part in (
-            f"storage://{config.cluster_name}",
-            config.org_name,
-            config.project_name,
-        )
-        if part
-    )
-    path = files_path.path.rstrip("/")
-    if path != project_root and not path.startswith(f"{project_root}/"):
+    project = tuple(part for part in (config.org_name, config.project_name) if part)
+    parts = tuple(part for part in uri.path.split("/") if part)
+    if (
+        uri.host != config.cluster_name
+        or parts[: len(project)] != project
+        or ".." in parts
+    ):
+        project_root = "/".join((config.cluster_name, *project))
         msg = (
-            f"Model repository {input_.model_repository.files_path.path} must be "
-            f"in the project of the app ({project_root})"
+            f"{title} {files_path.path} must be in the project of the app "
+            f"(storage://{project_root})"
         )
         raise ValueError(msg)
-    return files_path
+    return ApoloFilesPath(path=f"storage://{uri.host}/{'/'.join(parts)}")
 
 
 def _build_env(
@@ -288,7 +286,16 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
                 "Triton needs at least 1 GB"
             )
             raise ValueError(msg)
-        model_repository = _get_model_repository(self.client, input_)
+        model_repository = _get_project_path(
+            self.client, input_.model_repository.files_path, "Model repository"
+        )
+        hf_cache = (
+            _get_project_path(
+                self.client, input_.hf_cache.files_path, "Hugging Face cache"
+            )
+            if input_.hf_cache
+            else None
+        )
 
         extra_values = await gen_extra_values(
             apolo_client=self.client,
@@ -307,10 +314,10 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
                 mode=ApoloMountMode(mode=ApoloMountModes.RO),
             )
         ]
-        if input_.hf_cache:
+        if hf_cache:
             mounts.append(
                 ApoloFilesMount(
-                    storage_uri=input_.hf_cache.files_path,
+                    storage_uri=hf_cache,
                     mount_path=MountPath(path=HF_CACHE_PATH),
                     mode=ApoloMountMode(mode=ApoloMountModes.RW),
                 )
