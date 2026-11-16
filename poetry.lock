@@ -345,7 +345,7 @@ optional = false
 python-versions = ">=3.11,<4.0"
 groups = ["main"]
 files = []
-develop = true
+develop = false
 
 [package.dependencies]
 apolo-sdk = "^26.3.0"
@@ -364,8 +364,10 @@ yarl = "^1.23.0"
 fixtures = []
 
 [package.source]
-type = "directory"
-url = "../app-types-it-323"
+type = "git"
+url = "https://github.com/neuro-inc/app-types.git"
+reference = "e4453946f39f85f824ab249ff2fbd79068d3983a"
+resolved_reference = "e4453946f39f85f824ab249ff2fbd79068d3983a"
 
 [[package]]
 name = "apolo-sdk"
@@ -3342,4 +3344,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14.10,<4.0"
-content-hash = "047ae8c008f659554ab5d63108987801a71c05295b2daec077541ca04ebbb7e2"
+content-hash = "fe6045da8f6f1a48367cc9b64a39a220c81620a10575831f24a302f02b033872"

@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && useradd -m -d /app app
 
