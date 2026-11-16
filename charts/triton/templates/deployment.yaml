@@ -30,7 +30,7 @@ spec:
       {{- end }}
       containers:
         - name: triton
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "triton.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - tritonserver

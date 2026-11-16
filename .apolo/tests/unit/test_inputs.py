@@ -1,4 +1,6 @@
+import base64
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from apolo_app_types_fixtures.constants import (
@@ -10,6 +12,8 @@ from apolo_app_types_fixtures.constants import (
     DEFAULT_PROJECT_NAME,
 )
 from apolo_apps_triton.inputs_processor import TritonAppChartValueProcessor
+from apolo_sdk._parsing_utils import _ImageNameParser
+from yarl import URL
 
 from apolo_app_types.protocols.common import (
     ApoloAuth,
@@ -80,6 +84,7 @@ async def test_minimal_values(setup_clients, minimal_inputs):
     assert values["image"] == {
         "repository": "nvcr.io/nvidia/tritonserver",
         "tag": "26.10-py3",
+        "digest": "",
         "pullPolicy": "IfNotPresent",
     }
     assert values["dockerconfigjson"] is None
@@ -414,6 +419,9 @@ EXPLICIT_MODE_ARGS = [
     ["--model-control-mode=explicit", "--load-model=*"],
     ["--model-control-mode=none", "--model-control-mode=explicit"],
     ["--model-control-mode=none", "--model-control-mode", "Explicit"],
+    ["--model-control-mode=explicit", "--model-control-mode=none"],
+    ["--model-control-mode=explicit", "--id", "--model-control-mode=none"],
+    ["--model-control-mode=explicit", "--log-file", "--model-control-mode=none"],
 ]
 
 
@@ -460,8 +468,7 @@ async def test_explicit_mode_with_authentication_is_accepted(
         [],
         ["--model-control-mode=none"],
         ["--model-control-mode=poll"],
-        ["--model-control-mode=explicit", "--model-control-mode=none"],
-        ["--model-control=EXPLICIT", "--model-control-mode", "poll"],
+        ["--model-control-mode", "none"],
     ],
 )
 async def test_open_endpoints_without_explicit_mode_are_accepted(
@@ -523,3 +530,185 @@ async def test_private_image_gets_a_pull_secret(setup_clients, minimal_inputs):
     assert values["image"]["repository"] == "registry.example.com/triton"
     assert values["image"]["tag"] == "custom"
     assert values["dockerconfigjson"] == "e30="
+
+
+@pytest.mark.parametrize(
+    ("args", "env"),
+    [
+        (["--model-control-mode=$(MODE)"], {"MODE": "explicit"}),
+        (["--http-port$(E)=9000", "$(G)"], {"E": "", "G": "--allow-grpc=false"}),
+        (["$(MODE)"], {"MODE": "--model-control-mode=explicit"}),
+    ],
+)
+async def test_variable_references_in_server_args_are_refused(
+    setup_clients, minimal_inputs, args, env
+):
+    inputs = with_args(
+        minimal_inputs,
+        *args,
+        ingress_http=IngressHttp(auth=NoAuth()),
+        extra_env_vars=[Env(name=name, value=value) for name, value in env.items()],
+    )
+
+    with pytest.raises(ValueError, match=r"must not contain \$\("):
+        await generate(setup_clients, inputs)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--http-restricted-api=health:admin-key=secret"],
+        ["--http-restricted-api=metadata,Health:admin-key=secret"],
+        ["--grpc-restricted-protocol", "health:admin-key=secret"],
+        ["--http-restricted=health,inference:k=v"],
+    ],
+)
+async def test_restricting_the_health_api_is_refused(
+    setup_clients, minimal_inputs, args
+):
+    with pytest.raises(ValueError, match="must not restrict the health API"):
+        await generate(setup_clients, with_args(minimal_inputs, *args))
+
+
+@pytest.mark.parametrize("name", ["", "a b", "X=1", "A\nB", "1X", "IT-323"])
+async def test_invalid_env_names_are_refused(setup_clients, minimal_inputs, name):
+    inputs = minimal_inputs.model_copy(
+        update={"extra_env_vars": [Env(name=name, value="1")]}
+    )
+
+    with pytest.raises(ValueError, match="must start with a letter or '_'"):
+        await generate(setup_clients, inputs)
+
+
+@pytest.mark.parametrize("name", ["AIP_MODE", "AIP_HTTP_PORT"])
+async def test_vertex_ai_env_is_refused(setup_clients, minimal_inputs, name):
+    inputs = minimal_inputs.model_copy(
+        update={"extra_env_vars": [Env(name=name, value="PREDICTION")]}
+    )
+
+    with pytest.raises(ValueError, match="AIP_ variables switch tritonserver"):
+        await generate(setup_clients, inputs)
+
+
+async def test_valid_env_names_are_accepted(setup_clients, minimal_inputs):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "extra_env_vars": [Env(name="_X", value="1"), Env(name="aip_x1", value="2")]
+        }
+    )
+
+    values = await generate(setup_clients, inputs)
+
+    assert [env["name"] for env in values["env"]] == ["_X", "aip_x1"]
+
+
+UNSAFE_STORAGE_PATHS = [
+    "storage:triton:models",
+    "storage:triton/models?x=1",
+    "storage:triton/models#x",
+    "storage:triton/mo\ndels",
+    "storage:triton/mo\tdels",
+    f"storage://user@{DEFAULT_CLUSTER_NAME}/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}/m",
+    f"storage://{DEFAULT_CLUSTER_NAME}:80/{DEFAULT_ORG_NAME}/{DEFAULT_PROJECT_NAME}/m",
+    f"{PROJECT_ROOT}/triton:models",
+]
+
+
+@pytest.mark.parametrize("path", UNSAFE_STORAGE_PATHS)
+async def test_unsafe_model_repository_paths_are_refused(
+    setup_clients, minimal_inputs, path
+):
+    with pytest.raises(ValueError, match="Model repository .* plain storage path"):
+        await generate(setup_clients, with_repository(minimal_inputs, path))
+
+
+@pytest.mark.parametrize("path", UNSAFE_STORAGE_PATHS)
+async def test_unsafe_hugging_face_cache_paths_are_refused(
+    setup_clients, minimal_inputs, path
+):
+    inputs = minimal_inputs.model_copy(
+        update={"hf_cache": HuggingFaceCache(files_path=ApoloFilesPath(path=path))}
+    )
+
+    with pytest.raises(ValueError, match="Hugging Face cache .* plain storage path"):
+        await generate(setup_clients, inputs)
+
+
+DIGEST = "sha256:" + "0123456789abcdef" * 4
+
+
+@pytest.fixture
+def real_image_parser(setup_clients):
+    parser = _ImageNameParser(
+        DEFAULT_CLUSTER_NAME,
+        DEFAULT_ORG_NAME,
+        DEFAULT_PROJECT_NAME,
+        {DEFAULT_CLUSTER_NAME: URL("https://registry.cluster.org.neu.ro")},
+    )
+    setup_clients.parse.remote_image = MagicMock(
+        side_effect=lambda image, **_: parser.parse_remote(image)
+    )
+    setup_clients.config.registry_url = URL("https://registry.cluster.org.neu.ro")
+    token = base64.b64encode(json.dumps({"token": "sa-token"}).encode()).decode()
+    setup_clients.service_accounts.create = AsyncMock(return_value=(MagicMock(), token))
+    setup_clients.users.share = AsyncMock()
+    return setup_clients
+
+
+@pytest.mark.parametrize(
+    ("repository", "tag", "expected"),
+    [
+        (
+            "registry.example.com:5000/team/triton",
+            "1",
+            ("registry.example.com:5000/team/triton", "1", ""),
+        ),
+        ("localhost:5000/triton", None, ("localhost:5000/triton", "latest", "")),
+        (
+            "nvcr.io/nvidia/tritonserver",
+            "26.10-py3",
+            ("nvcr.io/nvidia/tritonserver", "26.10-py3", ""),
+        ),
+        (
+            "image:triton",
+            "v1",
+            ("registry.cluster.org.neu.ro/test-org/test-project/triton", "v1", ""),
+        ),
+        (
+            f"nvcr.io/nvidia/tritonserver@{DIGEST}",
+            None,
+            ("nvcr.io/nvidia/tritonserver", "", DIGEST),
+        ),
+        (
+            "nvcr.io/nvidia/tritonserver",
+            DIGEST,
+            ("nvcr.io/nvidia/tritonserver", "", DIGEST),
+        ),
+    ],
+)
+async def test_image_reference_through_the_sdk_parser(
+    real_image_parser, minimal_inputs, repository, tag, expected
+):
+    inputs = minimal_inputs.model_copy(
+        update={"image": ContainerImage(repository=repository, tag=tag)}
+    )
+
+    values = await generate(real_image_parser, inputs)
+
+    image = values["image"]
+    assert (image["repository"], image["tag"], image["digest"]) == expected
+
+
+@pytest.mark.parametrize(
+    "repository",
+    ["nvcr.io/nvidia/tritonserver@sha256:abc", f"image:triton@{DIGEST}"],
+)
+async def test_bad_digest_references_are_refused(
+    real_image_parser, minimal_inputs, repository
+):
+    inputs = minimal_inputs.model_copy(
+        update={"image": ContainerImage(repository=repository)}
+    )
+
+    with pytest.raises(ValueError, match="a digest must be sha256"):
+        await generate(real_image_parser, inputs)

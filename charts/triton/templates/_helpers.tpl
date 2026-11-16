@@ -24,7 +24,7 @@
 
 {{- define "triton.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "triton.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
 
 {{- define "triton.labels" -}}
@@ -43,4 +43,12 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "triton.progressDeadlineSeconds" -}}
 {{- $startup := .Values.probe.startup }}
 {{- add (mul $startup.periodSeconds $startup.failureThreshold) .Values.progressDeadlineMarginSeconds }}
+{{- end }}
+
+{{- define "triton.image" -}}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag }}
+{{- end }}
 {{- end }}

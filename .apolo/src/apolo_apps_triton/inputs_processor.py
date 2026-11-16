@@ -1,3 +1,4 @@
+import re
 import typing as t
 
 import apolo_sdk
@@ -36,6 +37,13 @@ INGRESS_CLASS_NAME = "traefik"
 SERVERS_SCHEME_ANNOTATION = "traefik.ingress.kubernetes.io/service.serversscheme"
 MODEL_CONTROL_MODE_FLAG = "--model-control-mode"
 EXPLICIT_MODE = "explicit"
+RESTRICTION_FLAGS = frozenset({"--http-restricted-api", "--grpc-restricted-protocol"})
+HEALTH_API = "health"
+VARIABLE_REFERENCE = "$("
+VERTEX_AI_ENV_PREFIX = "AIP_"
+ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+STORAGE_PREFIX = "storage:"
 FORBIDDEN_FLAGS = frozenset(
     {
         "--http-port",
@@ -181,6 +189,12 @@ def _check_server_args(input_: TritonAppInputs) -> None:
             "tritonserver stops on them"
         )
         raise ValueError(msg)
+    if any(VARIABLE_REFERENCE in arg for arg in input_.server_extra_args):
+        msg = (
+            "Server extra arguments must not contain $(: "
+            "variable references are not supported in server arguments"
+        )
+        raise ValueError(msg)
     parsed = _parse_server_args(input_.server_extra_args)
     forbidden = sorted({flag for flag, _ in parsed if flag in FORBIDDEN_FLAGS})
     if forbidden:
@@ -189,16 +203,23 @@ def _check_server_args(input_: TritonAppInputs) -> None:
             "ports, addresses and gRPC TLS are managed by the app"
         )
         raise ValueError(msg)
-    modes = [
-        value.strip().lower()
+    restricted = {
+        api.strip().lower()
         for flag, value in parsed
-        if flag == MODEL_CONTROL_MODE_FLAG
-    ]
-    if (
-        modes
-        and modes[-1] == EXPLICIT_MODE
-        and (_is_open(input_.ingress_http) or _is_open(input_.ingress_grpc))
-    ):
+        if flag in RESTRICTION_FLAGS
+        for api in value.partition(":")[0].split(",")
+    }
+    if HEALTH_API in restricted:
+        msg = (
+            "Server extra arguments must not restrict the health API: "
+            "the probes of the app call it without the restriction header"
+        )
+        raise ValueError(msg)
+    explicit = any(
+        flag == MODEL_CONTROL_MODE_FLAG and value.strip().lower() == EXPLICIT_MODE
+        for flag, value in parsed
+    )
+    if explicit and (_is_open(input_.ingress_http) or _is_open(input_.ingress_grpc)):
         msg = (
             "--model-control-mode=explicit lets callers load and unload models, "
             "so a public endpoint without authentication is not allowed with it"
@@ -206,9 +227,28 @@ def _check_server_args(input_: TritonAppInputs) -> None:
         raise ValueError(msg)
 
 
+def _check_storage_path(files_path: ApoloFilesPath, title: str) -> None:
+    rest = files_path.path.removeprefix(STORAGE_PREFIX)
+    authority, path = "", rest
+    if rest.startswith("//"):
+        authority, _, path = rest[2:].partition("/")
+    if (
+        any(char in rest for char in "?#")
+        or any(ord(char) < 32 or ord(char) == 127 for char in rest)
+        or any(char in authority for char in ":@")
+        or ":" in path
+    ):
+        msg = (
+            f"{title} {files_path.path!r} must be a plain storage path: "
+            "no ':', '?', '#', control characters, user or port"
+        )
+        raise ValueError(msg)
+
+
 def _get_project_path(
     client: apolo_sdk.Client, files_path: ApoloFilesPath, title: str
 ) -> ApoloFilesPath:
+    _check_storage_path(files_path, title)
     uri = URL(files_path.get_absolute_path_model(client).path)
     config = client.config
     project = tuple(part for part in (config.org_name, config.project_name) if part)
@@ -225,6 +265,44 @@ def _get_project_path(
         )
         raise ValueError(msg)
     return ApoloFilesPath(path=f"storage://{uri.host}/{'/'.join(parts)}")
+
+
+def _check_env_names(input_: TritonAppInputs) -> None:
+    for env_var in input_.extra_env_vars:
+        if not ENV_NAME_RE.fullmatch(env_var.name):
+            msg = (
+                f"Environment variable name {env_var.name!r} must start with a "
+                "letter or '_' and contain only letters, digits and '_'"
+            )
+            raise ValueError(msg)
+        if env_var.name.startswith(VERTEX_AI_ENV_PREFIX):
+            msg = (
+                f"Environment variable {env_var.name} is not allowed: "
+                "AIP_ variables switch tritonserver to Vertex AI mode"
+            )
+            raise ValueError(msg)
+
+
+async def _get_image(
+    client: apolo_sdk.Client, repository: str, tag: str | None
+) -> dict[str, str]:
+    name, _, digest = repository.partition("@")
+    if not digest and tag and tag.startswith("sha256:"):
+        digest = tag
+    if digest:
+        if name.startswith("image:") or not DIGEST_RE.fullmatch(digest):
+            msg = (
+                f"Image {repository}: a digest must be sha256 with 64 hex digits, "
+                "on an image outside the platform registry"
+            )
+            raise ValueError(msg)
+        return {"repository": name, "tag": "", "digest": digest}
+    image_url = await get_image_docker_url(
+        client=client, image=repository, tag=tag or "latest"
+    )
+    if repository.startswith("image:"):
+        repository, tag = image_url.rsplit(":", 1)
+    return {"repository": repository, "tag": tag or "latest", "digest": ""}
 
 
 def _build_env(
@@ -288,6 +366,7 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
         **kwargs: t.Any,
     ) -> dict[str, t.Any]:
         _check_server_args(input_)
+        _check_env_names(input_)
         preset = get_preset(self.client, input_.preset.name)
         if preset.memory < MIN_MEMORY_BYTES:
             msg = (
@@ -333,10 +412,7 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
             )
 
         image = input_.image
-        image_url = await get_image_docker_url(
-            client=self.client, image=image.repository, tag=image.tag or "latest"
-        )
-        repository, tag = image_url.rsplit(":", 1)
+        image_values = await _get_image(self.client, image.repository, image.tag)
         dockerconfig = await resolve_image_dockerconfig(
             client=self.client, image=image, sa_name=f"triton-{app_name}"
         )
@@ -346,8 +422,7 @@ class TritonAppChartValueProcessor(BaseChartValueProcessor[TritonAppInputs]):
             "apolo_app_id": extra_values["apolo_app_id"],
             "preset_name": extra_values["preset_name"],
             "image": {
-                "repository": repository,
-                "tag": tag,
+                **image_values,
                 "pullPolicy": image.pull_policy.value,
             },
             "dockerconfigjson": dockerconfig.filecontents if dockerconfig else None,

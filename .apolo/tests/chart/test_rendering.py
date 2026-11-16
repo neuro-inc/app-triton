@@ -230,13 +230,10 @@ async def test_deployment(setup_clients, minimal_inputs, tmp_path):
 async def test_server_args_are_not_expanded_by_kubernetes(
     setup_clients, minimal_inputs, tmp_path
 ):
-    inputs = minimal_inputs.model_copy(
-        update={
-            "server_extra_args": ["$(PORT_FLAG)", "--id=$$(X)", "--log-file=/tmp/$x"],
-            "extra_env_vars": [Env(name="PORT_FLAG", value="--http-port=9000")],
-        }
-    )
-    manifests = render(await generate(setup_clients, inputs), tmp_path)
+    values = await generate(setup_clients, minimal_inputs)
+    values["serverExtraArgs"] = ["$(PORT_FLAG)", "--id=$$(X)", "--log-file=/tmp/$x"]
+
+    manifests = render(values, tmp_path)
 
     assert get_container(manifests)["args"][5:] == [
         "$$(PORT_FLAG)",
@@ -245,23 +242,21 @@ async def test_server_args_are_not_expanded_by_kubernetes(
     ]
 
 
-async def test_explicit_mode_cannot_come_from_an_env_var(
-    setup_clients, minimal_inputs, tmp_path
-):
+async def test_image_digest(setup_clients, minimal_inputs, tmp_path):
+    digest = "sha256:" + "a" * 64
     inputs = minimal_inputs.model_copy(
         update={
-            "ingress_http": IngressHttp(auth=NoAuth()),
-            "server_extra_args": ["$(MODE)"],
-            "extra_env_vars": [Env(name="MODE", value="--model-control-mode=explicit")],
+            "image": ContainerImage(
+                repository=f"registry.example.com:5000/team/triton@{digest}"
+            )
         }
     )
+
     manifests = render(await generate(setup_clients, inputs), tmp_path)
 
-    container = get_container(manifests)
-    assert container["args"][5:] == ["$$(MODE)"]
-    assert {"name": "MODE", "value": "--model-control-mode=explicit"} in container[
-        "env"
-    ]
+    assert get_container(manifests)["image"] == (
+        f"registry.example.com:5000/team/triton@{digest}"
+    )
 
 
 async def test_progress_deadline_follows_the_startup_budget(
