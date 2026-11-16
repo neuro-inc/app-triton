@@ -23,7 +23,7 @@
     It exposes the KServe v2 HTTP/REST and gRPC APIs inside the project, and
     optionally on public endpoints protected by platform authentication.
   pub_date: "2026-11-16T00:00:00+00:00"
-  logo: https://storage.googleapis.com/development-421920-assets/app-logos/triton.svg
+  logo: https://storage.googleapis.com/development-421920-assets/app-logos/nvidia.svg
   changelog:
     file: ./CHANGELOG.md
   tags:
