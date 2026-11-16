@@ -39,7 +39,7 @@ spec:
             - --grpc-port=8001
             - --metrics-port=8002
             {{- range .Values.serverExtraArgs }}
-            - {{ . | quote }}
+            - {{ . | replace "$" "$$" | quote }}
             {{- end }}
           ports:
             - name: http

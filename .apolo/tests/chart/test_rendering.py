@@ -227,6 +227,24 @@ async def test_deployment(setup_clients, minimal_inputs, tmp_path):
     assert container["volumeMounts"] == [{"name": "dshm", "mountPath": "/dev/shm"}]
 
 
+async def test_server_args_are_not_expanded_by_kubernetes(
+    setup_clients, minimal_inputs, tmp_path
+):
+    inputs = minimal_inputs.model_copy(
+        update={
+            "server_extra_args": ["$(PORT_FLAG)", "--id=$$(X)", "--log-file=/tmp/$x"],
+            "extra_env_vars": [Env(name="PORT_FLAG", value="--http-port=9000")],
+        }
+    )
+    manifests = render(await generate(setup_clients, inputs), tmp_path)
+
+    assert get_container(manifests)["args"][5:] == [
+        "$$(PORT_FLAG)",
+        "--id=$$$$(X)",
+        "--log-file=/tmp/$$x",
+    ]
+
+
 async def test_progress_deadline_follows_the_startup_budget(
     setup_clients, minimal_inputs, tmp_path
 ):
